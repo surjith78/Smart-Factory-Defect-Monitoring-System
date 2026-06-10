@@ -139,9 +139,8 @@ This demonstrates a complete **end-to-end data engineering pipeline**.
 ---
 
 ## Author
-Surjith Kumar Srinivasan Venkata
-
+Surjith Kumar Srinivasan Venkata(蘇吉特)
+ 614785078
 Master's Program, Tamkang University
 
-Master’s Data Engineering Project  
-Focus: Edge AI + Streaming Data Pipelines + Smart Manufacturing Systems
+
