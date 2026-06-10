@@ -6,151 +6,284 @@ import queue
 import numpy as np
 from datetime import datetime
 
-# ================================
-# CONFIG
-# ================================
-VIDEO_SOURCE = 0  # webcam or "factory.mp4"
+# ==========================================
+# Smart Factory Defect Monitoring System
+# ==========================================
+
 MAX_QUEUE_SIZE = 10
+TOTAL_FRAMES = 500
 
 frame_queue = queue.Queue(maxsize=MAX_QUEUE_SIZE)
 result_queue = queue.Queue(maxsize=MAX_QUEUE_SIZE)
 
-# ================================
-# SIMPLE DEFECT DETECTOR (SIMULATION)
-# ================================
+# ==========================================
+# DEFECT DETECTION
+# ==========================================
+
 def detect_defect(frame):
-    """
-    Simulated defect detection:
-    - Uses brightness + noise + contour irregularity
-    - No ML model required (fast + demo-friendly)
-    """
 
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-    # Measure texture variation (proxy for defect)
     laplacian_var = cv2.Laplacian(gray, cv2.CV_64F).var()
-
-    # Mean brightness
     brightness = np.mean(gray)
 
-    # Rule-based defect logic
-    defect_score = (laplacian_var < 80) or (brightness < 60 or brightness > 200)
+    defect = (
+        laplacian_var < 50 or
+        brightness < 80 or
+        brightness > 220
+    )
 
-    return defect_score, laplacian_var, brightness
+    return defect, laplacian_var, brightness
 
-# ================================
+
+# ==========================================
+# SYNTHETIC FACTORY FRAME GENERATOR
+# ==========================================
+
+def create_factory_frame(frame_id):
+
+    frame = np.full((360, 640, 3), 180, dtype=np.uint8)
+
+    # conveyor belt
+    cv2.rectangle(frame, (0, 120), (640, 260), (120, 120, 120), -1)
+
+    # product
+    cv2.rectangle(frame, (250, 140), (390, 240), (220, 220, 220), -1)
+
+    is_defect = False
+
+    # every 10th frame inject defect
+    if frame_id % 10 == 0:
+
+        defect_type = np.random.choice(
+            ["hole", "scratch", "dark", "bright"]
+        )
+
+        is_defect = True
+
+        if defect_type == "hole":
+            cv2.circle(frame, (320, 190), 20, (0, 0, 0), -1)
+
+        elif defect_type == "scratch":
+            cv2.line(frame, (260, 150),
+                     (380, 230), (0, 0, 0), 5)
+
+        elif defect_type == "dark":
+            frame[:] = 40
+
+        elif defect_type == "bright":
+            frame[:] = 255
+
+    return frame, is_defect
+
+
+# ==========================================
 # PRODUCER THREAD
-# ================================
+# ==========================================
+
 def frame_producer():
-    cap = cv2.VideoCapture(VIDEO_SOURCE)
-    frame_id = 0
 
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
+    print("[PRODUCER] Generating frames...")
 
-        if frame_queue.full():
-            continue
+    for frame_id in range(TOTAL_FRAMES):
+
+        frame, _ = create_factory_frame(frame_id)
 
         frame_queue.put((frame_id, frame))
-        frame_id += 1
 
-    cap.release()
+        time.sleep(0.03)
 
-# ================================
+    frame_queue.put(None)
+
+    print("[PRODUCER] Finished")
+
+
+# ==========================================
 # CONSUMER THREAD
-# ================================
+# ==========================================
+
 def frame_consumer():
+
     defect_count = 0
     total_count = 0
 
-    while True:
-        if frame_queue.empty():
-            continue
+    print("[CONSUMER] Started")
 
-        frame_id, frame = frame_queue.get()
+    while True:
+
+        item = frame_queue.get()
+
+        if item is None:
+            result_queue.put(None)
+            break
+
+        frame_id, frame = item
+
         start_time = time.time()
 
-        # resize for speed
         frame = cv2.resize(frame, (640, 360))
 
-        # detect defect
         is_defect, texture, brightness = detect_defect(frame)
 
         total_count += 1
+
         if is_defect:
             defect_count += 1
 
         defect_rate = defect_count / total_count
 
         status = "OK"
+
         if defect_rate > 0.15:
             status = "WARNING"
+
         if defect_rate > 0.30:
             status = "CRITICAL"
 
-        processing_time = (time.time() - start_time) * 1000
+        processing_time = (
+            time.time() - start_time
+        ) * 1000
+
+        # annotate image
+
+        color = (0, 255, 0)
+
+        if is_defect:
+            color = (0, 0, 255)
+
+        label = "DEFECT" if is_defect else "OK"
+
+        cv2.putText(
+            frame,
+            label,
+            (20, 50),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            1,
+            color,
+            2
+        )
+
+        cv2.putText(
+            frame,
+            f"Status: {status}",
+            (20, 90),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.8,
+            color,
+            2
+        )
+
+        # save sample images
+        if frame_id % 50 == 0:
+            cv2.imwrite(
+                f"sample_frame_{frame_id}.jpg",
+                frame
+            )
 
         log = {
-            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "timestamp":
+                datetime.now().strftime(
+                    "%Y-%m-%d %H:%M:%S"
+                ),
             "frame_id": frame_id,
             "is_defect": bool(is_defect),
-            "texture_score": float(texture),
-            "brightness": float(brightness),
+            "texture_score": round(float(texture), 2),
+            "brightness": round(float(brightness), 2),
             "defect_rate": round(defect_rate, 3),
             "status": status,
-            "processing_time_ms": round(processing_time, 2)
+            "processing_time_ms":
+                round(processing_time, 2)
         }
 
         result_queue.put(log)
 
-        # Visualization
-        label = "DEFECT" if is_defect else "OK"
-        color = (0, 0, 255) if is_defect else (0, 255, 0)
+    print("[CONSUMER] Finished")
 
-        cv2.putText(frame, label, (30, 50),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
 
-        cv2.putText(frame, f"Status: {status}", (30, 100),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
-
-        cv2.imshow("Smart Factory Monitoring", frame)
-
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
-
-# ================================
+# ==========================================
 # LOGGER THREAD
-# ================================
+# ==========================================
+
 def logger():
-    with open("factory_log.jsonl", "w") as f:
+
+    print("[LOGGER] Started")
+
+    with open(
+        "factory_log.jsonl",
+        "w"
+    ) as logfile:
+
         while True:
-            if result_queue.empty():
-                continue
 
             log = result_queue.get()
-            f.write(json.dumps(log) + "\n")
-            f.flush()
 
-            print("[LOG]", log["frame_id"], log["status"], log["defect_rate"])
+            if log is None:
+                break
 
-# ================================
+            logfile.write(
+                json.dumps(log) + "\n"
+            )
+
+            logfile.flush()
+
+            print(
+    f"[LOG] {log['frame_id']} "
+    f"{log['status']} "
+    f"{log['defect_rate']}"
+)
+
+    print("[LOGGER] Finished")
+
+
+# ==========================================
 # MAIN
-# ================================
+# ==========================================
+
 if __name__ == "__main__":
-    print("[INFO] Starting Smart Factory Pipeline...")
 
-    t1 = threading.Thread(target=frame_producer, daemon=True)
-    t2 = threading.Thread(target=frame_consumer, daemon=True)
-    t3 = threading.Thread(target=logger, daemon=True)
+    print(
+        "\n=== SMART FACTORY DEFECT "
+        "MONITORING SYSTEM ===\n"
+    )
 
-    t1.start()
-    t2.start()
-    t3.start()
+    producer_thread = threading.Thread(
+        target=frame_producer
+    )
 
-    t1.join()
-    t2.join()
-    t3.join()
+    consumer_thread = threading.Thread(
+        target=frame_consumer
+    )
 
-    cv2.destroyAllWindows()
+    logger_thread = threading.Thread(
+        target=logger
+    )
+
+    producer_thread.start()
+    consumer_thread.start()
+    logger_thread.start()
+
+    producer_thread.join()
+    consumer_thread.join()
+    logger_thread.join()
+
+    print("\nPipeline Completed Successfully!")
+
+    print(
+        "\nGenerated Files:"
+    )
+
+    print(
+        "- factory_log.jsonl"
+    )
+
+    print(
+        "- sample_frame_0.jpg"
+    )
+
+    print(
+        "- sample_frame_50.jpg"
+    )
+
+    print(
+        "- sample_frame_100.jpg ..."
+    )
